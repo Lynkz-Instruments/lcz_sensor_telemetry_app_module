@@ -35,9 +35,6 @@ LOG_MODULE_REGISTER(lcz_sensor_app_mqtt, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 
 #define AD_LIST_SIZE CONFIG_LCZ_MQTT_BLE_AD_LIST_SIZE
 
-/* Size of string to hold advertisement as hexadecimal string */
-#define AD_STRING_SIZE (64 + 1)
-
 struct ad_list {
 	uint8_t data[AD_OVERHEAD_SIZE + AD_LIST_SIZE];
 	size_t index;
@@ -158,7 +155,7 @@ static void discard_postfix(void)
 
 static int append_ad_list(uint8_t *ad, uint8_t ad_len)
 {
-	uint8_t hex_chunk[AD_STRING_SIZE];
+	uint8_t hex_chunk[CONFIG_LCZ_MQTT_ADV_AS_HEX_STRING_MAX_LEN + 1];
 	size_t len;
 	int r = 0;
 

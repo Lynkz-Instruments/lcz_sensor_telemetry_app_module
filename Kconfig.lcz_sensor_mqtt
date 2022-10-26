@@ -26,4 +26,8 @@ config LCZ_MQTT_PUBLISH_RATE
 	int "Time in seconds between publishes of advertisement list"
 	default 600
 
+config LCZ_MQTT_ADV_AS_HEX_STRING_MAX_LEN
+	int "Maximum size of advertisement data in hexadecimal"
+	default 74
+
 endif # LCZ_SENSOR_TELEM_MQTT
