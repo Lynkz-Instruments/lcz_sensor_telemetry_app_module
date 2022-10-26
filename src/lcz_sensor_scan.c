@@ -116,6 +116,7 @@ static SensorEventData_t *get_event_data(uint16_t protocol_id, AdHandle_t *handl
 
 static bool is_in_network(uint16_t network_id);
 static bool is_duplicate(int idx, uint16_t id, uint8_t record_type);
+static void update_last_event(int idx, uint16_t id, uint8_t record_type);
 static void name_handler(int idx, struct net_buf_simple *ad);
 static int gw_obj_removed(int idx, void *context);
 
@@ -177,6 +178,7 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	uint16_t *event_id_ptr;
 	uint8_t *record_type_ptr;
 	SensorEventData_t *sensor_data_ptr;
+	int r = 0;
 
 	INCR_STAT(raw_ads);
 	handle = AdFind_Type(ad->data, ad->len, BT_DATA_MANUFACTURER_DATA, BT_DATA_INVALID);
@@ -313,8 +315,14 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 #endif
 #if defined(CONFIG_LCZ_SENSOR_TELEM_MQTT)
 		/* Send the entire advertisement payload to the telemetry handler */
-		lcz_sensor_mqtt_telemetry(idx, handle.pPayload, handle.size);
+		r = lcz_sensor_mqtt_telemetry(idx, handle.pPayload, handle.size);
 #endif
+
+		/* If MQTT publish is busy, don't update event id. */
+		if (r != -EAGAIN) {
+			update_last_event(idx, *event_id_ptr, *record_type_ptr);
+		}
+
 #if defined(CONFIG_LCZ_SENSOR_APP_LED)
 		lcz_led_blink(BLE_LED, &BLE_ACTIVITY_LED_PATTERN);
 #endif
@@ -361,7 +369,7 @@ static int get_index(const bt_addr_le_t *addr, bool add)
 	char addr_str[BT_ADDR_LE_STR_LEN];
 	int idx;
 
-	/* Check for the device in the databse */
+	/* Check for the device in the database */
 	idx = lcz_lwm2m_gw_obj_lookup_ble(addr);
 
 	/* If it wasn't there, and we're allowed to add, attempt to add it */
@@ -576,11 +584,14 @@ static bool is_duplicate(int idx, uint16_t id, uint8_t record_type)
 		return true;
 	}
 
-	/* Update the last event information for next time */
+	return false;
+}
+
+/* Update the last event information for next time */
+static void update_last_event(int idx, uint16_t id, uint8_t record_type)
+{
 	lbs.table[idx].last_event_id = id;
 	lbs.table[idx].last_record_type = record_type;
-
-	return false;
 }
 
 static void name_handler(int idx, struct net_buf_simple *ad)
