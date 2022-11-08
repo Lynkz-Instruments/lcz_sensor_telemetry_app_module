@@ -8,23 +8,25 @@
  * SPDX-License-Identifier: LicenseRef-LairdConnectivity-Clause
  */
 
-#include <logging/log.h>
+#include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(lcz_sensor_app_mqtt, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 
 /**************************************************************************************************/
 /* Includes                                                                                       */
 /**************************************************************************************************/
-#include <zephyr.h>
-#include <init.h>
-#include <sys/util.h>
+#include <zephyr/zephyr.h>
+#include <zephyr/init.h>
+#include <zephyr/sys/util.h>
 
-#include "attr.h"
-#include "lcz_lwm2m_gateway_obj.h"
-#include "lcz_mqtt.h"
-#include "lcz_sensor_event.h"
-#include "lcz_sensor_adv_format.h"
-#include "lcz_sensor_adv_match.h"
-#include "lcz_snprintk.h"
+#include <attr.h>
+#include <lcz_lwm2m_gateway_obj.h>
+#include <lcz_mqtt.h>
+#include <lcz_sensor_event.h>
+#include <lcz_sensor_adv_format.h>
+#include <lcz_sensor_adv_match.h>
+#include <lcz_snprintk.h>
+
+#include "lcz_sensor_app.h"
 
 /**************************************************************************************************/
 /* Local Constant, Macro and Type Definitions                                                     */

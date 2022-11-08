@@ -7,36 +7,37 @@
  * SPDX-License-Identifier: LicenseRef-LairdConnectivity-Clause
  */
 
-#include <logging/log.h>
+#include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(lcz_sensor_app_scan, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 
 /**************************************************************************************************/
 /* Includes                                                                                       */
 /**************************************************************************************************/
-#include <zephyr.h>
-#include <init.h>
-#include <bluetooth/addr.h>
+#include <zephyr/zephyr.h>
+#include <zephyr/init.h>
+#include <zephyr/bluetooth/addr.h>
 
-#include "attr.h"
-#include "lcz_lwm2m_gateway_obj.h"
-#include "lcz_lwm2m_util.h"
-#include "lcz_bt_scan.h"
-#include "lcz_sensor_event.h"
-#include "lcz_sensor_adv_format.h"
-#include "lcz_sensor_adv_match.h"
+#include <attr.h>
+#include <lcz_lwm2m_gateway_obj.h>
+#include <lcz_lwm2m_util.h>
+#include <lcz_bt_scan.h>
+#include <lcz_sensor_event.h>
+#include <lcz_sensor_adv_format.h>
+#include <lcz_sensor_adv_match.h>
 #if defined(CONFIG_LCZ_PKI_AUTH_SMP_CENTRAL)
-#include "lcz_sensor_adv_enc.h"
+#include <lcz_sensor_adv_enc.h>
 #endif
-#include "lcz_sensor_app.h"
 
 #if defined(CONFIG_LCZ_LWM2M_GATEWAY_PROXY)
-#include "lcz_lwm2m_gateway_proxy.h"
+#include <lcz_lwm2m_gateway_proxy.h>
 #endif
 
 #if defined(CONFIG_LCZ_SENSOR_APP_LED)
-#include "lcz_led.h"
-#include "led_config.h"
+#include <lcz_led.h>
+#include <led_config.h>
 #endif
+
+#include "lcz_sensor_app.h"
 
 /**************************************************************************************************/
 /* Local Constant, Macro and Type Definitions                                                     */
@@ -46,7 +47,7 @@ LOG_MODULE_REGISTER(lcz_sensor_app_scan, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 
 #define SCAN_RESTART_DELAY_SECONDS 2
 
-#define MAX_INSTANCES CONFIG_LCZ_LWM2M_GATEWAY_MAX_INSTANCES
+#define MAX_INSTANCES CONFIG_LWM2M_GATEWAY_MAX_INSTANCES
 
 struct ble_sensor_data {
 	uint8_t last_record_type;

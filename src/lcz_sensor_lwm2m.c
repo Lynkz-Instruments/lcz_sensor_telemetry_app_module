@@ -8,42 +8,43 @@
  * SPDX-License-Identifier: LicenseRef-LairdConnectivity-Clause
  */
 
-#include <logging/log.h>
+#include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(lcz_sensor_app_lwm2m, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 
 /**************************************************************************************************/
 /* Includes                                                                                       */
 /**************************************************************************************************/
-#include <zephyr.h>
-#include <bluetooth/addr.h>
+#include <zephyr/zephyr.h>
+#include <zephyr/bluetooth/addr.h>
 
-#include "lwm2m_resource_ids.h"
+#include <lwm2m_resource_ids.h>
 
-#include "lcz_sensor_app.h"
 
-#include "lcz_lwm2m_util.h"
-#include "lcz_sensor_adv_format.h"
+#include <lcz_lwm2m_util.h>
+#include <lcz_sensor_adv_format.h>
 
 #if defined(CONFIG_LCZ_LWM2M_TEMPERATURE)
-#include "lcz_lwm2m_temperature.h"
+#include <lcz_lwm2m_temperature.h>
 #endif
 
 #if defined(CONFIG_LCZ_LWM2M_CURRENT)
-#include "lcz_lwm2m_current.h"
+#include <lcz_lwm2m_current.h>
 #endif
 
 #if defined(CONFIG_LCZ_LWM2M_PRESSURE)
-#include "lcz_lwm2m_pressure.h"
+#include <lcz_lwm2m_pressure.h>
 #endif
 
 #if defined(CONFIG_LCZ_LWM2M_BATTERY)
-#include "lcz_lwm2m_battery.h"
-#include "lcz_lwm2m_battery_get_level.h"
+#include <lcz_lwm2m_battery.h>
+#include <lcz_lwm2m_battery_get_level.h>
 #endif
 
 #if defined(CONFIG_LCZ_LWM2M_FILL_LEVEL)
-#include "lcz_lwm2m_fill_level.h"
+#include <lcz_lwm2m_fill_level.h>
 #endif
+
+#include "lcz_sensor_app.h"
 
 /**************************************************************************************************/
 /* Global Function Definitions                                                                    */
