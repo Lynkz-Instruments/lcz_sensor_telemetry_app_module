@@ -93,7 +93,15 @@ static struct {
 #if defined(CONFIG_LCZ_SENSOR_APP_STATS)
 	struct stats stats;
 #endif
+#if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE)
+	bool coded;
+#endif
 } lbs;
+#if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE)
+#define SET_CODED(_b) lbs.coded = (_b)
+#else
+#define SET_CODED(_b)
+#endif
 
 /**************************************************************************************************/
 /* Local Function Prototypes                                                                      */
@@ -191,26 +199,32 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	switch (protocol_id) {
 	case BTXXX_1M_PHY_AD_PROTOCOL_ID:
 		INCR_STAT(legacy_ads);
+		SET_CODED(false);
 		break;
 
 	case BTXXX_CODED_PHY_AD_PROTOCOL_ID:
 		INCR_STAT(legacy_coded_ads);
+		SET_CODED(true);
 		break;
 
 	case BTXXX_1M_PHY_RSP_PROTOCOL_ID:
 		INCR_STAT(legacy_scan_rsps);
+		SET_CODED(false);
 		break;
 
 	case BTXXX_DM_1M_PHY_AD_PROTOCOL_ID:
 		INCR_STAT(dm_1m_ads);
+		SET_CODED(false);
 		break;
 
 	case BTXXX_DM_CODED_PHY_AD_PROTOCOL_ID:
 		INCR_STAT(dm_coded_unenc_ads);
+		SET_CODED(true);
 		break;
 
 	case BTXXX_DM_ENC_CODED_PHY_AD_PROTOCOL_ID:
 		INCR_STAT(dm_coded_enc_ads);
+		SET_CODED(true);
 		break;
 
 	case RESERVED_AD_PROTOCOL_ID:
@@ -307,8 +321,8 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		/* Send to telemetry handler */
 		INCR_STAT(telem_sent);
 #if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE)
-		LOG_INF("%s idx: %d RSSI: %d id: %u", lcz_sensor_event_get_string(*record_type_ptr),
-			idx, rssi, *event_id_ptr);
+		LOG_INF("%s idx: %d RSSI: %d id: %u (%s)", lcz_sensor_event_get_string(*record_type_ptr),
+			idx, rssi, *event_id_ptr, lbs.coded ? "coded" : "1M");
 #endif
 #if defined(CONFIG_LCZ_SENSOR_TELEM_LWM2M)
 		lcz_sensor_lwm2m_telemetry(idx, lbs.table[idx].product_id, *record_type_ptr,
