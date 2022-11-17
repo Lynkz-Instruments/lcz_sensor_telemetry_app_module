@@ -382,7 +382,7 @@ static int get_index(const bt_addr_le_t *addr, bool add)
 
 		/* Limit logging for blocked devices */
 		if (idx < 0) {
-			if (idx != -EPERM || IS_ENABLED(CONFIG_LCZ_SENSOR_CREATE_LOG_VERBOSE)) {
+			if (idx != -EPERM && IS_ENABLED(CONFIG_LCZ_SENSOR_CREATE_LOG_VERBOSE)) {
 				LOG_ERR("Gateway object create for %s failed: %d", addr_str, idx);
 			}
 		} else if (idx >= 0) {
