@@ -325,7 +325,7 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		}
 
 #if defined(CONFIG_LCZ_SENSOR_APP_LED)
-		lcz_led_blink(BLE_LED, &BLE_ACTIVITY_LED_PATTERN);
+		(void)lcz_led_blink(BLE_LED, &BLE_ACTIVITY_LED_PATTERN, false);
 #endif
 	}
 }
@@ -388,6 +388,9 @@ static int get_index(const bt_addr_le_t *addr, bool add)
 		} else if (idx >= 0) {
 			LOG_DBG("Gateway object create request %s: idx: %d inst: %d", addr_str, idx,
 				lcz_lwm2m_gw_obj_get_instance(idx));
+#if defined(CONFIG_LCZ_SENSOR_APP_LED)
+			(void)lcz_led_blink(BLE_LED, &BLE_ACTIVITY_LED_PATTERN, false);
+#endif
 		}
 	}
 
