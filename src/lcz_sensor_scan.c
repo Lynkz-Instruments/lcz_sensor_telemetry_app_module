@@ -37,6 +37,7 @@ LOG_MODULE_REGISTER(lcz_sensor_app_scan, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 #include <led_config.h>
 #endif
 
+#include "lcz_sensor_shell.h"
 #include "lcz_sensor_app.h"
 
 /**************************************************************************************************/
@@ -81,6 +82,10 @@ static struct bt_le_scan_param scan_parameters = BT_LE_SCAN_PARAM_INIT(
 	BT_LE_SCAN_TYPE_ACTIVE, (BT_LE_SCAN_OPT_CODED | BT_LE_SCAN_OPT_FILTER_DUPLICATE),
 	CONFIG_LCZ_BT_SCAN_DEFAULT_INTERVAL, CONFIG_LCZ_BT_SCAN_DEFAULT_WINDOW);
 
+#if defined(CONFIG_LCZ_SENSOR_SHELL)
+	static struct obs_file_format observation_data;
+#endif
+
 /**************************************************************************************************/
 /* Local Data Definitions                                                                         */
 /**************************************************************************************************/
@@ -93,11 +98,12 @@ static struct {
 #if defined(CONFIG_LCZ_SENSOR_APP_STATS)
 	struct stats stats;
 #endif
-#if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE)
+#if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE) || defined(CONFIG_LCZ_SENSOR_SHELL)
 	bool coded;
 #endif
 } lbs;
-#if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE)
+
+#if defined(CONFIG_LCZ_SENSOR_TELEM_LOG_VERBOSE) || defined(CONFIG_LCZ_SENSOR_SHELL)
 #define SET_CODED(_b) lbs.coded = (_b)
 #else
 #define SET_CODED(_b)
@@ -241,6 +247,16 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 			return;
 		}
 	}
+
+#if defined(CONFIG_LCZ_SENSOR_SHELL)
+	memcpy(&observation_data.addr, addr, sizeof(observation_data.addr));
+	observation_data.protocol_id = protocol_id,
+	observation_data.network_id = (network_id_ptr == NULL) ? 0 : *network_id_ptr;
+	observation_data.rssi = rssi;
+	observation_data.coded = lbs.coded;
+	lcz_sensor_shell_record_advertisement(&observation_data);
+#endif
+
 
 	/* Get the device index from the database */
 	if (protocol_id != BTXXX_1M_PHY_RSP_PROTOCOL_ID) {

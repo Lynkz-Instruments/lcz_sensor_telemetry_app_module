@@ -58,6 +58,10 @@ config LCZ_SENSOR_TELEM_MQTT
 	bool "LC sensor telemetry reporting via MQTT"
 	depends on LCZ_MQTT
 
+config LCZ_SENSOR_SHELL
+	bool "Enable Sensor Shell"
+	depends on SHELL
+
 endchoice
 
 rsource "Kconfig.lcz_sensor_mqtt"
