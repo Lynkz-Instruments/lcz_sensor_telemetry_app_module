@@ -169,6 +169,33 @@ static int delete_allow_list(const struct shell *shell, size_t argc, char **argv
 #endif
 }
 
+static int device_list_show(const struct shell *shell, size_t argc, char **argv)
+{
+	return lcz_lwm2m_gw_obj_show_device_list(shell);
+}
+
+static int block_list_show(const struct shell *shell, size_t argc, char **argv)
+{
+	return lcz_lwm2m_gw_obj_show_blocklist(shell);
+}
+
+static int block_list_remove(const struct shell *shell, size_t argc, char **argv)
+{
+	int r;
+	int idx;
+
+	if ((argc == 2) && (argv[1] != NULL)) {
+		idx = strtol(argv[1], NULL, 0);
+		r = lcz_lwm2m_gw_obj_blocklist_remove(idx);
+		shell_print(shell, "unblock status: %d", r);
+	} else {
+		shell_error(shell, "Invalid parameters");
+		r = -EINVAL;
+	}
+
+	return r;
+}
+
 /**************************************************************************************************/
 /* Global Function Definitions                                                                    */
 /**************************************************************************************************/
@@ -195,6 +222,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD(obs_get, NULL, "Print advertisement information from file", obs_get),
 	SHELL_CMD(allow_list_load, NULL, "Load the allow list", load_allow_list),
 	SHELL_CMD(allow_list_delete, NULL, "Delete the allow list", delete_allow_list),
+	SHELL_CMD(dev_show, NULL, "Show the device list", device_list_show),
+	SHELL_CMD(block_show, NULL, "Show the block list", block_list_show),
+	SHELL_CMD(block_rem, NULL, "Remove device from the block list <index>", block_list_remove),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(lcs, &sub_sensor_shell, "Laird Connectivity Sensor (Gateway) Application", NULL);
