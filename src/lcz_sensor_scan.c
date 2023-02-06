@@ -2,7 +2,7 @@
  * @file lcz_sensor_scan.c
  * @brief Process BLE advertisements for Laird Connectivity sensors.
  *
- * Copyright (c) 2022 Laird Connectivity
+ * Copyright (c) 2022-2023 Laird Connectivity
  *
  * SPDX-License-Identifier: LicenseRef-LairdConnectivity-Clause
  */
@@ -185,7 +185,7 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		       struct net_buf_simple *ad)
 {
 	uint16_t protocol_id;
-	int idx;
+	int idx = -1;
 	AdHandle_t handle;
 	uint16_t *flags_ptr;
 	uint16_t *network_id_ptr;
@@ -257,7 +257,17 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	lcz_sensor_shell_record_advertisement(&observation_data);
 #endif
 
-
+#if defined(CONFIG_LCZ_SENSOR_DM_ONLY)
+	if (protocol_id == BTXXX_DM_1M_PHY_AD_PROTOCOL_ID ||
+	    protocol_id == BTXXX_DM_CODED_PHY_AD_PROTOCOL_ID ||
+	    protocol_id == BTXXX_DM_ENC_CODED_PHY_AD_PROTOCOL_ID) {
+		/* Allow the device to be created for an advertisement */
+		idx = get_index(addr, true);
+	} else if (protocol_id == BTXXX_DM_1M_PHY_RSP_PROTOCOL_ID) {
+		/* Do not allow the device to be created just for a scan response */
+		idx = get_index(addr, false);
+	}
+#else
 	/* Get the device index from the database */
 	if (protocol_id != BTXXX_1M_PHY_RSP_PROTOCOL_ID) {
 		/* Allow the device to be created for an advertisement */
@@ -266,6 +276,8 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		/* Do not allow the device to be created just for a scan response */
 		idx = get_index(addr, false);
 	}
+#endif
+
 	if (!valid_index(idx)) {
 		INCR_STAT(invalid_device_ads);
 		return;

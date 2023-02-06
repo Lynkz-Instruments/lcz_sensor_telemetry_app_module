@@ -46,6 +46,11 @@ config LCZ_SENSOR_CREATE_LOG_VERBOSE
 	bool "Log attempted creation of blocked devices"
 	depends on LCZ_SENSOR_TELEM_APP_LOG_LEVEL >= LCZ_SENSOR_TELEM_APP_LOG_LEVEL_DBG
 
+config LCZ_SENSOR_DM_ONLY
+	bool "Device managed sensors only"
+	help
+	  Only create gateway objects for device manageable sensors
+
 choice
 	prompt "Telemetry transport type"
 	optional
