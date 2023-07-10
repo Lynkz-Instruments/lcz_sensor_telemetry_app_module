@@ -9,12 +9,12 @@ if LCZ_SENSOR_TELEM_MQTT
 config LCZ_MQTT_BLE_AD_LIST_SIZE
 	int "Size in bytes of Advertisement List"
 	range 65 4096
-	default 1072
+	default 1500
 
 config LCZ_MQTT_BLE_PUBLISH_THRESHOLD
 	int "Publish immediately if list size is past this threshold"
 	range 1 4096
-	default 768
+	default 780
 
 config LCZ_MQTT_BLE_FIRST_PUBLISH
 	int
@@ -28,6 +28,6 @@ config LCZ_MQTT_PUBLISH_RATE
 
 config LCZ_MQTT_ADV_AS_HEX_STRING_MAX_LEN
 	int "Maximum size of advertisement data in hexadecimal"
-	default 74
+	default 128
 
 endif # LCZ_SENSOR_TELEM_MQTT

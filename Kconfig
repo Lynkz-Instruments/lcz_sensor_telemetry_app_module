@@ -11,6 +11,7 @@ menuconfig LCZ_SENSOR_TELEM_APP
 	depends on LCZ_AD_FIND
 	depends on LCZ_SENSOR_ADV_MATCH
 	depends on BT_EXT_ADV
+	depends on LCZ_QRTC
 	select LCZ_SENSOR_EVENT
 
 if LCZ_SENSOR_TELEM_APP

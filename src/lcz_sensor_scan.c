@@ -36,7 +36,7 @@ LOG_MODULE_REGISTER(lcz_sensor_app_scan, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 #include <lcz_led.h>
 #include <led_config.h>
 #endif
-
+#include <lcz_qrtc.h>
 #include "lcz_sensor_shell.h"
 #include "lcz_sensor_app.h"
 
@@ -53,6 +53,10 @@ LOG_MODULE_REGISTER(lcz_sensor_app_scan, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 struct ble_sensor_data {
 	uint8_t last_record_type;
 	uint16_t last_event_id;
+	uint8_t fft_table[4117]; //Type(1) + BT_ADDRESS(6) + FFT data(4110)
+	uint16_t fft_table_index;
+	uint8_t data_table[45];
+	uint8_t debug_table[45];
 	int product_id;
 };
 
@@ -60,6 +64,8 @@ struct ble_sensor_data {
 struct stats {
 	uint32_t raw_ads;
 	uint32_t legacy_ads;
+	uint32_t lynkz_ads;
+	uint32_t lynkz_rsps;
 	uint32_t legacy_scan_rsps;
 	uint32_t legacy_coded_ads;
 	uint32_t dm_1m_ads;
@@ -135,6 +141,10 @@ static void update_last_event(int idx, uint16_t id, uint8_t record_type);
 static void name_handler(int idx, struct net_buf_simple *ad);
 static int gw_obj_removed(int idx, void *context);
 
+static int compare_crc(uint16_t protocol_id, AdHandle_t *handle);
+uint16_t custom_crc16(const uint8_t* buff, size_t size);
+
+
 /**************************************************************************************************/
 /* SYS INIT                                                                                       */
 /**************************************************************************************************/
@@ -200,7 +210,6 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 
 	/* Determine the protocol ID for this advertisement */
 	protocol_id = lcz_sensor_adv_match(ad, true, true);
-
 	/* Update generic statistics */
 	switch (protocol_id) {
 	case BTXXX_1M_PHY_AD_PROTOCOL_ID:
@@ -232,7 +241,16 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 		INCR_STAT(dm_coded_enc_ads);
 		SET_CODED(true);
 		break;
+	
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
+		INCR_STAT(lynkz_ads);
+		SET_CODED(false);
+		break;
 
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
+		INCR_STAT(lynkz_rsps);
+		SET_CODED(false);
+		break;
 	case RESERVED_AD_PROTOCOL_ID:
 	default:
 		/* This isn't a supported protocol. Do nothing. */
@@ -247,6 +265,10 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 			return;
 		}
 	}
+	if(!compare_crc(protocol_id, &handle)){
+		return;
+	}
+
 
 #if defined(CONFIG_LCZ_SENSOR_SHELL)
 	memcpy(&observation_data.addr, addr, sizeof(observation_data.addr));
@@ -358,7 +380,77 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 #endif
 #if defined(CONFIG_LCZ_SENSOR_TELEM_MQTT)
 		/* Send the entire advertisement payload to the telemetry handler */
-		r = lcz_sensor_mqtt_telemetry(idx, handle.pPayload, handle.size);
+		
+
+		if(protocol_id == LYNKZ_1M_PHY_RSP_PROTOCOL_ID && record_type_ptr != NULL){
+			uint8_t len = 0;
+			switch (*record_type_ptr)
+			{
+			case SENSOR_EVENT_LYNKZ_DATA:
+				if(*event_id_ptr - lbs.table[idx].last_event_id == 1 && *event_id_ptr % 2){
+					memcpy(&lbs.table[idx].data_table[25], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+					r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].data_table, 45);
+				}
+				else{
+					uint32_t timestamp = lcz_qrtc_get_epoch();
+					lbs.table[idx].data_table[0] = SENSOR_EVENT_LYNKZ_DATA;
+					memcpy(&lbs.table[idx].data_table[1], &timestamp, sizeof(timestamp));
+					memcpy(&lbs.table[idx].data_table[sizeof(timestamp)+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+				}
+				break;
+			case SENSOR_EVENT_LYNKZ_DEBUG:
+				if(*event_id_ptr - lbs.table[idx].last_event_id == 1 && *event_id_ptr % 2){
+					memcpy(&lbs.table[idx].debug_table[25], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+					r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].debug_table, 45);
+				}
+				else{
+					uint32_t timestamp = lcz_qrtc_get_epoch();
+					lbs.table[idx].debug_table[0] = SENSOR_EVENT_LYNKZ_DEBUG;
+					memcpy(&lbs.table[idx].debug_table[1], &timestamp, sizeof(timestamp));
+					memcpy(&lbs.table[idx].debug_table[sizeof(timestamp)+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+				}
+				break;
+			case SENSOR_EVENT_LYNKZ_FFT:
+			
+				uint16_t startIndex = lbs.table[idx].fft_table_index;
+				len = (((LynkzSensorRspEvent_t *)handle.pPayload)->data_size);
+				if(startIndex+len > 4117){
+					LOG_ERR("FFT out of bounds");
+					break;
+				}
+				memcpy(&lbs.table[idx].fft_table[startIndex], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
+				lbs.table[idx].fft_table_index += len;
+
+				if(lbs.table[idx].fft_table_index == 97) //TESTING: Change to 4117 for prod
+				{
+					r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].fft_table, 97); //TESTING: Change to 4117 for prod
+				}
+				break;
+			
+			case SENSOR_EVENT_LYNKZ_FFT_START:
+				len = (((LynkzSensorRspEvent_t *)handle.pPayload)->data_size);
+				if(*event_id_ptr - lbs.table[idx].last_event_id == 1 && *event_id_ptr % 2){
+					uint16_t startIndex = lbs.table[idx].fft_table_index;
+					memcpy(&lbs.table[idx].fft_table[startIndex], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
+				}
+				else{
+					lbs.table[idx].fft_table[0] = SENSOR_EVENT_LYNKZ_FFT;
+					memcpy(&lbs.table[idx].fft_table[1], addr->a.val, BT_ADDR_SIZE);
+					lbs.table[idx].fft_table_index = BT_ADDR_SIZE+1;
+					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
+					
+				}
+				lbs.table[idx].fft_table_index += len;
+				break;
+
+			default:
+				break;
+			}
+		}
+		//else{
+		//	r = lcz_sensor_mqtt_telemetry(idx, handle.pPayload, handle.size);
+		//}
+		
 #endif
 
 		/* If MQTT publish is busy, don't update event id. */
@@ -452,6 +544,12 @@ static uint16_t *get_flags(uint16_t protocol_id, AdHandle_t *handle)
 	case BTXXX_1M_PHY_AD_PROTOCOL_ID:
 		value = (((LczSensorAdEvent_t *)handle->pPayload)->flags);
 		return &value;
+	
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
+		return (uint16_t)0x0000;
+
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
+		return (uint16_t)0x0000;
 
 	case BTXXX_CODED_PHY_AD_PROTOCOL_ID:
 		value = (((LczSensorAdCoded_t *)handle->pPayload)->ad.flags);
@@ -482,6 +580,9 @@ static uint16_t *get_network_id(uint16_t protocol_id, AdHandle_t *handle)
 		value = (((LczSensorAdEvent_t *)handle->pPayload)->networkId);
 		return &value;
 
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
+		return (uint16_t)0x0000;
+
 	case BTXXX_CODED_PHY_AD_PROTOCOL_ID:
 		value = (((LczSensorAdCoded_t *)handle->pPayload)->ad.networkId);
 		return &value;
@@ -509,6 +610,13 @@ static uint16_t *get_product_id(uint16_t protocol_id, AdHandle_t *handle)
 	switch (protocol_id) {
 	case BTXXX_1M_PHY_AD_PROTOCOL_ID:
 		break;
+
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
+		break;
+
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
+		value = (((LynkzSensorAdEvent_t *)handle->pPayload)->productId);
+		return &value;
 
 	case BTXXX_CODED_PHY_AD_PROTOCOL_ID:
 		value = (((LczSensorAdCoded_t *)handle->pPayload)->rsp.productId);
@@ -538,6 +646,13 @@ static uint16_t *get_event_id(uint16_t protocol_id, AdHandle_t *handle)
 	switch (protocol_id) {
 	case BTXXX_1M_PHY_AD_PROTOCOL_ID:
 		value = (((LczSensorAdEvent_t *)handle->pPayload)->id);
+		return &value;
+
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
+		break;
+
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
+		value = (((LynkzSensorRspEvent_t *)handle->pPayload)->packetIndex);
 		return &value;
 
 	case BTXXX_CODED_PHY_AD_PROTOCOL_ID:
@@ -571,6 +686,12 @@ static uint8_t *get_event_record_type(uint16_t protocol_id, AdHandle_t *handle)
 	case BTXXX_1M_PHY_RSP_PROTOCOL_ID:
 		break;
 
+
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
+		((LynkzSensorRspEvent_t *)handle->pPayload)->event_type += 42;
+		return &(((LynkzSensorRspEvent_t *)handle->pPayload)->event_type);
+
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
 	case BTXXX_DM_1M_PHY_AD_PROTOCOL_ID:
 	case BTXXX_DM_CODED_PHY_AD_PROTOCOL_ID:
 		break;
@@ -599,6 +720,8 @@ static SensorEventData_t *get_event_data(uint16_t protocol_id, AdHandle_t *handl
 	case BTXXX_1M_PHY_RSP_PROTOCOL_ID:
 		break;
 
+	case LYNKZ_1M_PHY_AD_PROTOCOL_ID:
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
 	case BTXXX_DM_1M_PHY_AD_PROTOCOL_ID:
 	case BTXXX_DM_CODED_PHY_AD_PROTOCOL_ID:
 		break;
@@ -609,6 +732,37 @@ static SensorEventData_t *get_event_data(uint16_t protocol_id, AdHandle_t *handl
 	}
 
 	return NULL;
+}
+
+static int compare_crc(uint16_t protocol_id, AdHandle_t *handle)
+{
+	switch (protocol_id) {
+
+	case LYNKZ_1M_PHY_RSP_PROTOCOL_ID:
+		uint8_t* payload_data = ((LynkzSensorRspEvent_t *)handle->pPayload)->data;
+		uint8_t payload_size = ((LynkzSensorRspEvent_t *)handle->pPayload)->data_size;
+		uint16_t crc =  ((LynkzSensorRspEvent_t *)handle->pPayload)->crc;
+		uint16_t calculated_crc = custom_crc16(payload_data, payload_size);
+		if(crc == calculated_crc){
+			return 1;
+		}
+		break;
+	}
+	return 0;
+}
+
+uint16_t custom_crc16(const uint8_t* buff, size_t size){
+	uint8_t* data = (uint8_t*)buff;
+	uint16_t result = 0xFFFF;
+
+	for (size_t i = 0; i < size; ++i){
+		result ^= data[i];
+		for (size_t j = 0; j < 8; ++j){
+			if (result & 0x01) result = (result >> 1) ^ 0xA001;
+			else result >>= 1;
+		}
+	}
+	return result;
 }
 
 static bool is_in_network(uint16_t network_id)
