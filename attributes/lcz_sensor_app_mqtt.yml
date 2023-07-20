@@ -9,7 +9,7 @@ attributes:
     schema:
       type: integer
     x-ctype: bool
-    x-default: 0
+    x-default: 1
     x-savable: true
     x-writable: true
     x-readable: true

@@ -54,6 +54,7 @@ struct ble_sensor_data {
 	uint8_t last_record_type;
 	uint16_t last_event_id;
 	uint8_t fft_table[4117]; //Type(1) + BT_ADDRESS(6) + FFT data(4110)
+	uint16_t fft_id;
 	uint16_t fft_table_index;
 	uint8_t data_table[45];
 	uint8_t debug_table[45];
@@ -156,6 +157,10 @@ static int lcz_sensor_app_scan_init(const struct device *dev)
 
 	for (idx = 0; idx < MAX_INSTANCES; idx++) {
 		lbs.table[idx].product_id = INVALID_PRODUCT_ID;
+	}
+
+	for (idx = 0; idx < MAX_INSTANCES; idx++) {
+		lbs.table[idx].fft_id = 0;
 	}
 
 	/* Init delayed work to restart scanning if it fails */
@@ -414,16 +419,17 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 			
 				uint16_t startIndex = lbs.table[idx].fft_table_index;
 				len = (((LynkzSensorRspEvent_t *)handle.pPayload)->data_size);
-				if(startIndex+len > 4117){
+				if(startIndex+len > 4119){
 					LOG_ERR("FFT out of bounds");
 					break;
 				}
 				memcpy(&lbs.table[idx].fft_table[startIndex], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
 				lbs.table[idx].fft_table_index += len;
+				LOG_INF("FFT index: %d", lbs.table[idx].fft_table_index);
 
-				if(lbs.table[idx].fft_table_index == 97) //TESTING: Change to 4117 for prod
+				if(lbs.table[idx].fft_table_index == 4119) //TESTING: Change to 4119 for prod
 				{
-					r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].fft_table, 97); //TESTING: Change to 4117 for prod
+					r = lcz_sensor_mqtt_telemetry(idx, lbs.table[idx].fft_table, 4119); //TESTING: Change to 4119 for prod
 				}
 				break;
 			
@@ -436,8 +442,10 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 				else{
 					lbs.table[idx].fft_table[0] = SENSOR_EVENT_LYNKZ_FFT;
 					memcpy(&lbs.table[idx].fft_table[1], addr->a.val, BT_ADDR_SIZE);
-					lbs.table[idx].fft_table_index = BT_ADDR_SIZE+1;
-					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
+					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+1], &lbs.table[idx].fft_id, sizeof(lbs.table[idx].fft_id));
+					lbs.table[idx].fft_table_index = BT_ADDR_SIZE+3;
+					lbs.table[idx].fft_id++;
+					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+3], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
 					
 				}
 				lbs.table[idx].fft_table_index += len;

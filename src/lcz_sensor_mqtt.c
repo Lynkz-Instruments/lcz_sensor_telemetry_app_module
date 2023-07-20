@@ -26,6 +26,7 @@ LOG_MODULE_REGISTER(lcz_sensor_app_mqtt, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 #include <lcz_sensor_adv_format.h>
 #include <lcz_sensor_adv_match.h>
 #include <lcz_snprintk.h>
+#include <zephyr/drivers/modem/hl7800.h>
 
 #include "lcz_sensor_app.h"
 
@@ -50,14 +51,17 @@ struct mqtt_ble {
 	struct lcz_mqtt_user agent;
 	bool mqtt_connected;
 	struct k_work_delayable publish_work;
+	struct k_work_delayable modem_sleep_work;
 	struct ad_list ad_list;
 };
 
-#define LYNKZ_RECORD_SIZE 91
+#define LYNKZ_RECORD_SIZE 50
 /**************************************************************************************************/
 /* Local Data Definitions                                                                         */
 /**************************************************************************************************/
 static struct mqtt_ble mb;
+
+static struct mdm_hl7800_callback_agent hl7800_evt_agent;
 
 //The following values can only be used after obtaining the ad_list semaphore
 uint16_t mqtt_history_offset = 0;
@@ -69,7 +73,7 @@ uint16_t live_file_index = 0;
 uint16_t live_block_index = 0;
 
 
-
+bool failedToSend = false; //Wait for timer before retrying when send fails
 bool reachedEOF = false;
 
 /**************************************************************************************************/
@@ -81,7 +85,7 @@ static void mqtt_disconnect_callback(int status);
 
 static void publish_list(struct k_work *work);
 static void reschedule_publish(k_timeout_t delay);
-static int append_ad_list(uint8_t *ad, uint8_t ad_len);
+static int append_ad_list(uint8_t *ad, uint16_t ad_len);
 static int append_str(const char *str, bool quote);
 static int add_delimiter(void);
 static int add_prefix(void);
@@ -91,6 +95,11 @@ static void flush_ad_list(void);
 
 static int write_to_history(const uint8_t *data, uint16_t length);
 static int prepare_history_ad_list();
+#if defined(CONFIG_LCZ_MQTT_PSM)
+static void hl7800_event_callback(enum mdm_hl7800_event event, void *event_data);
+static void reschedule_awake_modem(k_timeout_t delay);
+static void awake_modem(struct k_work *work);
+#endif
 
 /**************************************************************************************************/
 /* SYS INIT                                                                                       */
@@ -115,9 +124,16 @@ static int lcz_sensor_app_mqtt_init(const struct device *dev)
 		hist_file_index = mqtt_history_offset;
 		live_file_index = mqtt_history_offset;
 	}
-
+#if defined(CONFIG_LCZ_MQTT_PSM)
+	hl7800_evt_agent.event_callback = hl7800_event_callback;
+	mdm_hl7800_register_event_callback(&hl7800_evt_agent);
 	k_work_init_delayable(&mb.publish_work, publish_list);
-	reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_BLE_FIRST_PUBLISH));
+	k_work_init_delayable(&mb.modem_sleep_work, awake_modem);
+	reschedule_awake_modem(K_SECONDS(CONFIG_LCZ_MQTT_MODEM_CYCLE_DURATION));
+#else
+	k_work_init_delayable(&mb.publish_work, publish_list);
+	reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
+#endif
 
 	return 0;
 }
@@ -126,6 +142,32 @@ SYS_INIT(lcz_sensor_app_mqtt_init, APPLICATION, CONFIG_LCZ_SENSOR_APP_INIT_PRIOR
 /**************************************************************************************************/
 /* Local Function Definitions                                                                     */
 /**************************************************************************************************/
+#if defined(CONFIG_LCZ_MQTT_PSM)
+static void hl7800_event_callback(enum mdm_hl7800_event event, void *event_data){
+	uint8_t code = ((struct mdm_hl7800_compound_event *)event_data)->code;
+	char *s = (char *)event_data;
+
+	switch (event) {
+	case HL7800_EVENT_SLEEP_STATE_CHANGE:
+		if(code==1){ //Hibernate
+			LOG_INF("Modem Hibernating");
+		}
+		else if(code==2){ //Awake
+			LOG_INF("Modem Awake");
+			reschedule_publish(K_NO_WAIT);
+		}
+		break;
+	}
+}
+
+static void awake_modem(struct k_work *work)
+{
+	LOG_INF("Waking Modem");
+	mdm_hl7800_reset();
+	LOG_INF("Modem Reset Done");
+}
+#endif
+
 static int append_str(const char *str, bool quote)
 {
 	int r = 0;
@@ -230,7 +272,7 @@ static void discard_postfix(void)
 	mb.ad_list.index = mb.ad_list.postfix_index;
 }
 
-static int append_ad_list(uint8_t *ad, uint8_t ad_len)
+static int append_ad_list(uint8_t *ad, uint16_t ad_len)
 {
 	uint8_t hex_chunk[LYNKZ_RECORD_SIZE];
 	size_t len;
@@ -238,30 +280,24 @@ static int append_ad_list(uint8_t *ad, uint8_t ad_len)
 	LOG_INF("Live File Index: %d, Live Block Index: %d", live_file_index, live_block_index);
 	LOG_INF("Hist File Index: %d, Hist Block Index: %d", hist_file_index, hist_block_index);
 	do {
-		if (mb.ad_list.index == 0) {
-			r = add_prefix();
-		} else {
-			r = add_delimiter();
-		}
-		if (r < 0) {
-			break;
-		}
+
 		//Check if we must chunk the incoming data
 		if(ad_len > LYNKZ_RECORD_SIZE){
+			LOG_INF("FFT ready to send");
 			uint8_t iteration = 0;
-			uint8_t writeSize = LYNKZ_RECORD_SIZE-6-1-1; //Ble + PacketType + ChunkId
-			//Setting Bluetooth address and packet type
-			memcpy(hex_chunk, ad, 7);
-			while(7+writeSize*iteration<ad_len)
+			uint8_t writeSize = LYNKZ_RECORD_SIZE-6-1-1-2; //Ble + PacketType + ChunkId + FFT_Id
+			//Setting Bluetooth address, packet type and fft_ID
+			memcpy(hex_chunk, ad, 9);
+			while(9+writeSize*iteration<ad_len)
 			{
-				hex_chunk[7] = iteration;
-				if(ad_len-7-writeSize*iteration >= writeSize){
-					memcpy(&hex_chunk[8], &ad[7+ iteration*writeSize], writeSize); //CONTINUE HERE
+				hex_chunk[9] = iteration;
+				if(ad_len-9-writeSize*iteration >= writeSize){
+					memcpy(&hex_chunk[10], &ad[9+ iteration*writeSize], writeSize); //CONTINUE HERE
 					r = write_to_history(hex_chunk, LYNKZ_RECORD_SIZE);
 				}
 				else{
-					memset(&hex_chunk[8], 0, sizeof(hex_chunk)-8); //Pad the rest with 0
-					memcpy(&hex_chunk[8], &ad[7+ iteration*writeSize], ad_len-7-writeSize*iteration);
+					memset(&hex_chunk[10], 0, sizeof(hex_chunk)-10); //Pad the rest with 0
+					memcpy(&hex_chunk[10], &ad[9+ iteration*writeSize], ad_len-9-writeSize*iteration);
 					r = write_to_history(hex_chunk, LYNKZ_RECORD_SIZE);
 				}
 				iteration++;
@@ -273,15 +309,19 @@ static int append_ad_list(uint8_t *ad, uint8_t ad_len)
 		if (r < 0) {
 			break;
 		}
-		if(live_file_index != hist_file_index || live_block_index> hist_block_index+10)
+#if defined(CONFIG_LCZ_MQTT_PSM)
+
+#else
+		if(live_file_index != hist_file_index || live_block_index> hist_block_index+20 && !failedToSend)
 		{
 			LOG_DBG("Ad list publish threshold met");
 			reschedule_publish(K_NO_WAIT);
 		}
-		if (mb.ad_list.index >= CONFIG_LCZ_MQTT_BLE_PUBLISH_THRESHOLD) {
+		if (mb.ad_list.index >= CONFIG_LCZ_MQTT_BLE_PUBLISH_THRESHOLD && !failedToSend) {
 			LOG_DBG("Ad list publish threshold met");
 			reschedule_publish(K_NO_WAIT);
 		}
+#endif
 
 	} while (0);
 
@@ -299,7 +339,7 @@ static int prepare_history_ad_list()
 	sprintf(path, "/lfs1/mqtt/history%d", hist_file_index);
 
 	//Trying to place a maximum of 10 entries (1040 bytes) in the ad buffer (to send by mqtt)
-	for(int blockIndex = hist_block_index; blockIndex< hist_block_index+10; blockIndex++)
+	for(int blockIndex = hist_block_index; blockIndex< hist_block_index+20; blockIndex++)
 	{
 		r = fsu_read_abs_block(path, blockIndex*LYNKZ_RECORD_SIZE, hex_chunk, sizeof(hex_chunk));
 		if(r<0){
@@ -376,7 +416,6 @@ static void publish_list(struct k_work *work)
 		return;
 	}
 
-	reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
 	k_sem_take(&mb.ad_list.sem, K_FOREVER);
 
 	if (live_block_index == hist_block_index && live_file_index == hist_file_index) {
@@ -410,21 +449,39 @@ static void publish_list(struct k_work *work)
 
 	if (attr_get_uint32(ATTR_ID_mqtt_publish_qos, 0) == 0) {
 		/* Ack requires qos 1 (or 2) */
+		reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
 
 	} else if (r < 0) {
 		/* Free on error, otherwise wait for publish ack. */
+		reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
+		failedToSend = true;
 		discard_postfix();
 	}
 	else if (r==0){
+		failedToSend = false;
 		if(reachedEOF)
 		{
 			hist_block_index = 0;
 			hist_file_index++;
 		}
 		else{
-			uint8_t len =  (int)(strlen(p->ad_list.data)/(LYNKZ_RECORD_SIZE-1));
+			uint8_t len =  (p->ad_list.index+1)/LYNKZ_RECORD_SIZE;
 			hist_block_index += len;
 		}
+#if defined(CONFIG_LCZ_MQTT_PSM)
+		//Send again if elements are still pending, otherwise wait for next cycle
+		if(live_file_index != hist_file_index || live_block_index> hist_block_index+20)
+		{
+			reschedule_publish(K_NO_WAIT);
+		}
+		else{
+			//Start new cycle
+			mdm_hl7800_set_desired_sleep_level(HL7800_SLEEP_HIBERNATE);
+			reschedule_awake_modem(K_SECONDS(CONFIG_LCZ_MQTT_MODEM_CYCLE_DURATION));
+		}
+#else
+		reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
+#endif
 	}
 	flush_ad_list();
 	k_sem_give(&mb.ad_list.sem);
@@ -439,6 +496,17 @@ static void reschedule_publish(k_timeout_t delay)
 		LOG_ERR("Unable to schedule MQTT AD publish: %d", r);
 	}
 }
+#if defined(CONFIG_LCZ_MQTT_PSM)
+static void reschedule_awake_modem(k_timeout_t delay)
+{
+	int r;
+	LOG_INF("Setting wake Modem delay");
+	r = k_work_reschedule(&mb.modem_sleep_work, delay);
+	if (r < 0) {
+		LOG_ERR("Unable to schedule MQTT Modem awake: %d", r);
+	}
+}
+#endif
 
 static void mqtt_ack_callback(int status)
 {
@@ -466,7 +534,7 @@ static void mqtt_disconnect_callback(int status)
 /**************************************************************************************************/
 /* Global Function Definitions                                                                    */
 /**************************************************************************************************/
-int lcz_sensor_mqtt_telemetry(int idx, uint8_t *ad, uint8_t ad_len)
+int lcz_sensor_mqtt_telemetry(int idx, uint8_t *ad, uint16_t ad_len)
 {
 	int r = 0;
 
@@ -488,7 +556,11 @@ int lcz_sensor_mqtt_telemetry(int idx, uint8_t *ad, uint8_t ad_len)
 		if (k_sem_take(&mb.ad_list.sem, K_NO_WAIT) == 0) {
 			flush_ad_list();
 			k_sem_give(&mb.ad_list.sem);
+	#if defined(CONFIG_LCZ_MQTT_PSM)
+
+	#else
 			reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
+	#endif
 			mb.restart = false;
 		}
 	}

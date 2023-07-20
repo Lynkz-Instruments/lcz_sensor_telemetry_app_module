@@ -41,7 +41,7 @@ void lcz_sensor_lwm2m_telemetry(int idx, uint16_t product_id, uint8_t record_typ
  * @returns 0 if advertisement was published/cached or -EAGAIN if this function should be
  * called again
  */
-int lcz_sensor_mqtt_telemetry(int idx, uint8_t *ad, uint8_t ad_len);
+int lcz_sensor_mqtt_telemetry(int idx, uint8_t *ad, uint16_t ad_len);
 
 #ifdef __cplusplus
 }
