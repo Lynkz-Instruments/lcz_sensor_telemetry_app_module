@@ -53,11 +53,10 @@ LOG_MODULE_REGISTER(lcz_sensor_app_scan, CONFIG_LCZ_SENSOR_TELEM_APP_LOG_LEVEL);
 struct ble_sensor_data {
 	uint8_t last_record_type;
 	uint16_t last_event_id;
-	uint8_t fft_table[4117]; //Type(1) + BT_ADDRESS(6) + FFT data(4110)
-	uint16_t fft_id;
-	uint16_t fft_table_index;
-	uint8_t data_table[45];
-	uint8_t debug_table[45];
+	uint8_t fft_table[48]; //Type(1) + BT_ADDRESS(6) + FFT data(4110)
+	uint8_t data_table[46];
+	uint8_t debug_table[46];
+	uint8_t stats_table[10];
 	int product_id;
 };
 
@@ -79,10 +78,16 @@ struct stats {
 	uint32_t telem_sent;
 	uint32_t name_updates;
 	uint32_t decrypt_failed;
+	uint8_t missed_data;
+	uint8_t missed_debug;
+	uint32_t send_missed_index;
+	uint32_t send_missed_threshhold;
 };
+#define RESET_STAT(field) lbs.stats.field = 0
 #define INCR_STAT(field) lbs.stats.field += 1
 #else
 #define INCR_STAT(field)
+#define RESET_STAT(field)
 #endif
 
 static struct bt_le_scan_param scan_parameters = BT_LE_SCAN_PARAM_INIT(
@@ -159,10 +164,6 @@ static int lcz_sensor_app_scan_init(const struct device *dev)
 		lbs.table[idx].product_id = INVALID_PRODUCT_ID;
 	}
 
-	for (idx = 0; idx < MAX_INSTANCES; idx++) {
-		lbs.table[idx].fft_id = 0;
-	}
-
 	/* Init delayed work to restart scanning if it fails */
 	k_work_init_delayable(&(lbs.scan_restart_work), scan_restart_work_handler);
 
@@ -180,6 +181,9 @@ static int lcz_sensor_app_scan_init(const struct device *dev)
 		k_work_reschedule(&(lbs.scan_restart_work), K_SECONDS(SCAN_RESTART_DELAY_SECONDS));
 	}
 
+
+	lbs.stats.send_missed_threshhold = 50;
+	lbs.stats.send_missed_index = 0;
 	/* Find out when objects get deleted */
 	lbs.agent.gw_obj_deleted = gw_obj_removed;
 	lcz_lwm2m_util_register_agent(&lbs.agent);
@@ -389,75 +393,114 @@ static void ad_handler(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 
 		if(protocol_id == LYNKZ_1M_PHY_RSP_PROTOCOL_ID && record_type_ptr != NULL){
 			uint8_t len = 0;
+			if(lbs.stats.send_missed_index == lbs.stats.send_missed_threshhold ){
+				//Send Stats
+				memset(lbs.table[idx].stats_table, 0, sizeof(lbs.table[idx].stats_table));
+				lbs.table[idx].stats_table[0] = 46; //Stats message ID
+				lbs.table[idx].stats_table[1] = lbs.stats.missed_data;
+				lbs.table[idx].stats_table[2] = lbs.stats.missed_debug;
+				lcz_sensor_mqtt_telemetry(idx, lbs.table[idx].stats_table, 3);
+				lbs.stats.send_missed_threshhold+=50;
+			}
+
+			lbs.stats.send_missed_index++;
+
 			switch (*record_type_ptr)
 			{
 			case SENSOR_EVENT_LYNKZ_DATA:
-				if(*event_id_ptr - lbs.table[idx].last_event_id == 1 && *event_id_ptr % 2){
-					memcpy(&lbs.table[idx].data_table[25], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
-					r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].data_table, 45);
+				if(*event_id_ptr % 2){
+					//If event_id is odd, it is the second part of a data message
+
+					//If we received correctly the last message, we send the completed message to
+					//the telemetry layer.
+					
+					//If not we add the number of missing messages to the stats
+					if(*event_id_ptr - lbs.table[idx].last_event_id == 1){
+						memcpy(&lbs.table[idx].data_table[26], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+						r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].data_table, 46);
+					}
+					else if(*event_id_ptr < lbs.table[idx].last_event_id)
+					{
+						lbs.stats.missed_data +=  *event_id_ptr + (255 - lbs.table[idx].last_event_id);
+					}
+					else{
+						lbs.stats.missed_data += *event_id_ptr - lbs.table[idx].last_event_id;
+					}
 				}
 				else{
+					//If event_id is pair, we store the data and wait for the next message. 
+					//If the last message doesn't have an id of event_id-1, we add the missing data stats.
+					if(*event_id_ptr - lbs.table[idx].last_event_id == 1 || *event_id_ptr == 0)
+					{
+						//No stats to add, everything is as expected
+					}
+					else if(*event_id_ptr < lbs.table[idx].last_event_id)
+					{
+						lbs.stats.missed_data +=  *event_id_ptr + (255 - lbs.table[idx].last_event_id);
+					}
+					else{
+						lbs.stats.missed_data += *event_id_ptr - lbs.table[idx].last_event_id;
+					}
 					uint32_t timestamp = lcz_qrtc_get_epoch();
 					lbs.table[idx].data_table[0] = SENSOR_EVENT_LYNKZ_DATA;
 					memcpy(&lbs.table[idx].data_table[1], &timestamp, sizeof(timestamp));
-					memcpy(&lbs.table[idx].data_table[sizeof(timestamp)+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+					memcpy(&lbs.table[idx].data_table[sizeof(timestamp)+1], &rssi, sizeof(rssi));
+					memcpy(&lbs.table[idx].data_table[sizeof(timestamp)+2], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
 				}
 				break;
+
 			case SENSOR_EVENT_LYNKZ_DEBUG:
-				if(*event_id_ptr - lbs.table[idx].last_event_id == 1 && *event_id_ptr % 2){
-					memcpy(&lbs.table[idx].debug_table[25], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
-					r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].debug_table, 45);
+				if(*event_id_ptr % 2){
+					if(*event_id_ptr - lbs.table[idx].last_event_id == 1){
+						memcpy(&lbs.table[idx].debug_table[26], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+						r = lcz_sensor_mqtt_telemetry(idx, &lbs.table[idx].debug_table, 46);
+					}
+					else if(*event_id_ptr < lbs.table[idx].last_event_id)
+					{
+						lbs.stats.missed_debug +=  *event_id_ptr + (255 - lbs.table[idx].last_event_id);
+					}
+					else{
+						lbs.stats.missed_debug += *event_id_ptr - lbs.table[idx].last_event_id;
+					}
 				}
 				else{
+					if(*event_id_ptr - lbs.table[idx].last_event_id == 1 || *event_id_ptr == 0)
+					{
+						//No stats to add, everything is as expected
+					}
+					else if(*event_id_ptr < lbs.table[idx].last_event_id)
+					{
+						lbs.stats.missed_debug +=  *event_id_ptr + (255 - lbs.table[idx].last_event_id);
+					}
+					else{
+						lbs.stats.missed_debug += *event_id_ptr - lbs.table[idx].last_event_id;
+					}
 					uint32_t timestamp = lcz_qrtc_get_epoch();
 					lbs.table[idx].debug_table[0] = SENSOR_EVENT_LYNKZ_DEBUG;
 					memcpy(&lbs.table[idx].debug_table[1], &timestamp, sizeof(timestamp));
-					memcpy(&lbs.table[idx].debug_table[sizeof(timestamp)+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+					memcpy(&lbs.table[idx].debug_table[sizeof(timestamp)+1], &rssi, sizeof(rssi));
+					memcpy(&lbs.table[idx].debug_table[sizeof(timestamp)+2], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
 				}
 				break;
-			case SENSOR_EVENT_LYNKZ_FFT:
-			
-				uint16_t startIndex = lbs.table[idx].fft_table_index;
-				len = (((LynkzSensorRspEvent_t *)handle.pPayload)->data_size);
-				if(startIndex+len > 4119){
-					LOG_ERR("FFT out of bounds");
-					break;
-				}
-				memcpy(&lbs.table[idx].fft_table[startIndex], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
-				lbs.table[idx].fft_table_index += len;
-				LOG_INF("FFT index: %d", lbs.table[idx].fft_table_index);
 
-				if(lbs.table[idx].fft_table_index == 4119) //TESTING: Change to 4119 for prod
-				{
-					r = lcz_sensor_mqtt_telemetry(idx, lbs.table[idx].fft_table, 4119); //TESTING: Change to 4119 for prod
-				}
-				break;
-			
-			case SENSOR_EVENT_LYNKZ_FFT_START:
-				len = (((LynkzSensorRspEvent_t *)handle.pPayload)->data_size);
+			case SENSOR_EVENT_LYNKZ_FFT:
+
 				if(*event_id_ptr - lbs.table[idx].last_event_id == 1 && *event_id_ptr % 2){
-					uint16_t startIndex = lbs.table[idx].fft_table_index;
-					memcpy(&lbs.table[idx].fft_table[startIndex], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
+					memcpy(&lbs.table[idx].fft_table[27], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+					r = lcz_sensor_mqtt_telemetry(idx, lbs.table[idx].fft_table, sizeof(lbs.table[idx].fft_table));
 				}
 				else{
 					lbs.table[idx].fft_table[0] = SENSOR_EVENT_LYNKZ_FFT;
 					memcpy(&lbs.table[idx].fft_table[1], addr->a.val, BT_ADDR_SIZE);
-					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+1], &lbs.table[idx].fft_id, sizeof(lbs.table[idx].fft_id));
-					lbs.table[idx].fft_table_index = BT_ADDR_SIZE+3;
-					lbs.table[idx].fft_id++;
-					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+3], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), len);
-					
+					memcpy(&lbs.table[idx].fft_table[BT_ADDR_SIZE+1], (((LynkzSensorRspEvent_t *)handle.pPayload)->data), 20);
+					LOG_INF("FFT chunk ID: %d", lbs.table[idx].fft_table[8] + 256* lbs.table[idx].fft_table[9]);
 				}
-				lbs.table[idx].fft_table_index += len;
 				break;
 
 			default:
 				break;
 			}
 		}
-		//else{
-		//	r = lcz_sensor_mqtt_telemetry(idx, handle.pPayload, handle.size);
-		//}
 		
 #endif
 
@@ -787,8 +830,7 @@ static bool is_in_network(uint16_t network_id)
 static bool is_duplicate(int idx, uint16_t id, uint8_t record_type)
 {
 	/* If both devices have just powered-up, don't filter event 0 */
-	if ((id == lbs.table[idx].last_event_id) &&
-	    (record_type == lbs.table[idx].last_record_type)) {
+	if ((id == lbs.table[idx].last_event_id) && (record_type == lbs.table[idx].last_record_type)) {
 		return true;
 	}
 
@@ -806,10 +848,13 @@ static void name_handler(int idx, struct net_buf_simple *ad)
 {
 	AdHandle_t handle;
 	int r;
+	char defaultName[6];
+	sprintf(defaultName, "tag%03d", idx);
 
 	handle = AdFind_Name(ad->data, ad->len);
 	if (handle.pPayload == NULL) {
-		return;
+		handle.pPayload = defaultName;
+		handle.size = 6;
 	}
 
 	/* If the LwM2M connection has been proxied or named already, then don't try to set name. */

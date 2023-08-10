@@ -71,6 +71,7 @@ uint16_t hist_block_index = 0;
 
 uint16_t live_file_index = 0;
 uint16_t live_block_index = 0;
+bool modem_ready = false;
 
 
 bool failedToSend = false; //Wait for timer before retrying when send fails
@@ -128,11 +129,10 @@ static int lcz_sensor_app_mqtt_init(const struct device *dev)
 	hl7800_evt_agent.event_callback = hl7800_event_callback;
 	mdm_hl7800_register_event_callback(&hl7800_evt_agent);
 	k_work_init_delayable(&mb.publish_work, publish_list);
-	k_work_init_delayable(&mb.modem_sleep_work, awake_modem);
-	reschedule_awake_modem(K_SECONDS(CONFIG_LCZ_MQTT_MODEM_CYCLE_DURATION));
 #else
 	k_work_init_delayable(&mb.publish_work, publish_list);
 	reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
+	modem_ready = true;
 #endif
 
 	return 0;
@@ -149,23 +149,21 @@ static void hl7800_event_callback(enum mdm_hl7800_event event, void *event_data)
 
 	switch (event) {
 	case HL7800_EVENT_SLEEP_STATE_CHANGE:
+		k_sem_take(&mb.ad_list.sem, K_FOREVER);
 		if(code==1){ //Hibernate
 			LOG_INF("Modem Hibernating");
+			modem_ready = false;
 		}
 		else if(code==2){ //Awake
 			LOG_INF("Modem Awake");
+			modem_ready = true;
 			reschedule_publish(K_NO_WAIT);
 		}
+		k_sem_give(&mb.ad_list.sem);
 		break;
 	}
 }
 
-static void awake_modem(struct k_work *work)
-{
-	LOG_INF("Waking Modem");
-	mdm_hl7800_reset();
-	LOG_INF("Modem Reset Done");
-}
 #endif
 
 static int append_str(const char *str, bool quote)
@@ -283,7 +281,6 @@ static int append_ad_list(uint8_t *ad, uint16_t ad_len)
 
 		//Check if we must chunk the incoming data
 		if(ad_len > LYNKZ_RECORD_SIZE){
-			LOG_INF("FFT ready to send");
 			uint8_t iteration = 0;
 			uint8_t writeSize = LYNKZ_RECORD_SIZE-6-1-1-2; //Ble + PacketType + ChunkId + FFT_Id
 			//Setting Bluetooth address, packet type and fft_ID
@@ -338,7 +335,7 @@ static int prepare_history_ad_list()
 	char path[94] ;
 	sprintf(path, "/lfs1/mqtt/history%d", hist_file_index);
 
-	//Trying to place a maximum of 10 entries (1040 bytes) in the ad buffer (to send by mqtt)
+	//Trying to place a maximum of 20 entries (1040 bytes) in the ad buffer (to send by mqtt)
 	for(int blockIndex = hist_block_index; blockIndex< hist_block_index+20; blockIndex++)
 	{
 		r = fsu_read_abs_block(path, blockIndex*LYNKZ_RECORD_SIZE, hex_chunk, sizeof(hex_chunk));
@@ -417,6 +414,11 @@ static void publish_list(struct k_work *work)
 	}
 
 	k_sem_take(&mb.ad_list.sem, K_FOREVER);
+	if(!modem_ready)
+	{
+		//Modem is hibernating, aborting publish
+		return;
+	}
 
 	if (live_block_index == hist_block_index && live_file_index == hist_file_index) {
 		LOG_DBG("Nothing to send");
@@ -453,7 +455,11 @@ static void publish_list(struct k_work *work)
 
 	} else if (r < 0) {
 		/* Free on error, otherwise wait for publish ack. */
+#if defined(CONFIG_LCZ_MQTT_PSM)
+		modem_ready = false;
+#else 
 		reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
+#endif
 		failedToSend = true;
 		discard_postfix();
 	}
@@ -463,21 +469,21 @@ static void publish_list(struct k_work *work)
 		{
 			hist_block_index = 0;
 			hist_file_index++;
+			reachedEOF = false;
 		}
 		else{
 			uint8_t len =  (p->ad_list.index+1)/LYNKZ_RECORD_SIZE;
 			hist_block_index += len;
 		}
-#if defined(CONFIG_LCZ_MQTT_PSM)
 		//Send again if elements are still pending, otherwise wait for next cycle
 		if(live_file_index != hist_file_index || live_block_index> hist_block_index+20)
 		{
 			reschedule_publish(K_NO_WAIT);
 		}
+#if defined(CONFIG_LCZ_MQTT_PSM)
 		else{
-			//Start new cycle
-			mdm_hl7800_set_desired_sleep_level(HL7800_SLEEP_HIBERNATE);
-			reschedule_awake_modem(K_SECONDS(CONFIG_LCZ_MQTT_MODEM_CYCLE_DURATION));
+			//Publish is done, waiting for next cycle
+			modem_ready = false;
 		}
 #else
 		reschedule_publish(K_SECONDS(CONFIG_LCZ_MQTT_PUBLISH_RATE));
@@ -496,17 +502,6 @@ static void reschedule_publish(k_timeout_t delay)
 		LOG_ERR("Unable to schedule MQTT AD publish: %d", r);
 	}
 }
-#if defined(CONFIG_LCZ_MQTT_PSM)
-static void reschedule_awake_modem(k_timeout_t delay)
-{
-	int r;
-	LOG_INF("Setting wake Modem delay");
-	r = k_work_reschedule(&mb.modem_sleep_work, delay);
-	if (r < 0) {
-		LOG_ERR("Unable to schedule MQTT Modem awake: %d", r);
-	}
-}
-#endif
 
 static void mqtt_ack_callback(int status)
 {

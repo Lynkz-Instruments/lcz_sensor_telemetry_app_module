@@ -26,10 +26,6 @@ config LCZ_MQTT_PUBLISH_RATE
 	int "Time in seconds between publishes of advertisement list"
 	default 600
 
-config LCZ_MQTT_MODEM_CYCLE_DURATION
-	int "Time in seconds between modem awakes"
-	default 100
-
 config LCZ_MQTT_PSM
 	bool "Power Save mode for mqtt module"
 	default n
